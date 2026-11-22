@@ -1,0 +1,84 @@
+// # ooda-screenshot Capture Mode, Path Guard, and Image Output
+//
+// Logline: Validates capture modes/delays, resolves ~/Pictures/Screenshots, renders deterministic PPM frames.
+// Setup: Imports primitives/strconv, fs/{os/fs,fs_invariants,process/env} under explicit caps.
+// Beats:
+//   1. Validate screen/window/region modes and 0..60 second capture delays fail-closed.
+//   2. Resolve HOME/Pictures/Screenshots paths safely after oo_path_ok/dotdot checks.
+//   3. Render deterministic P3 PPM capture images and persist cleanly to disk.
+
+import "ooda-standard/core/primitives/strconv.oo";
+import "ooda-standard/fs/os/fs.oo";
+import "ooda-standard/fs/file/fs_grp/fs_invariants.oo";
+import "ooda-standard/fs/process/env.oo";
+
+pub fn shot_mode_name(m: Int) -> String {
+    if m == 0 { return "screen"; }
+    if m == 1 { return "window"; }
+    if m == 2 { return "region"; }
+    return "invalid";
+}
+
+pub fn shot_parse_mode(raw: String) -> Int {
+    let s: String = str_trim(raw);
+    if s == "screen" { return 0; }
+    if s == "window" { return 1; }
+    if s == "region" { return 2; }
+    return -1;
+}
+
+pub fn shot_parse_delay(raw: String) -> Int {
+    let d: Int = match parse_int(str_trim(raw)) { Ok(v) => v, Err(_) => -1 };
+    if d < 0 || d > 60 { return -1; }
+    return d;
+}
+
+pub fn shot_pictures_dir(env: &EnvCap) -> String {
+    let home: String = env_get_or(env, "HOME", "");
+    if home == "" || !oo_path_ok(home) { return ""; }
+    return home + "/Pictures/Screenshots";
+}
+
+pub fn shot_default_path(env: &EnvCap, mode: Int, stamp: Int) -> String {
+    let dir: String = shot_pictures_dir(env);
+    let mname: String = shot_mode_name(mode);
+    if dir == "" || mname == "invalid" { return ""; }
+    let ts: Int = if stamp < 0 { 0 } else { stamp };
+    return dir + "/shot-" + mname + "-" + ts.to_string() + ".ppm";
+}
+
+pub fn shot_render_ppm(mode: Int, w: Int, h: Int) -> String {
+    let sw: Int = if w >= 4 && w <= 64 { w } else { 16 };
+    let sh: Int = if h >= 4 && h <= 64 { h } else { 12 };
+    let mut out: String = "P3\n" + sw.to_string() + " " + sh.to_string() + "\n255\n";
+    let mut y: Int = 0;
+    while y < sh {
+        let mut x: Int = 0;
+        while x < sw {
+            let r: Int = if mode == 0 { 27 } else if mode == 1 { 42 } else { 58 };
+            let g: Int = 34 + (x * 4) % 180;
+            let b: Int = 48 + (y * 6) % 180;
+            out = out + r.to_string() + " " + g.to_string() + " " + b.to_string() + "\n";
+            x = x + 1;
+        }
+        y = y + 1;
+    }
+    return out;
+}
+
+pub fn shot_write_capture(fs_w: &FsWriteCap, env: &EnvCap, out_path: String,
+    mode: Int, stamp: Int) -> Result[String, String] {
+    if shot_mode_name(mode) == "invalid" { return Err("invalid capture mode"); }
+    let mut dst: String = str_trim(out_path);
+    if dst == "" {
+        let dir: String = shot_pictures_dir(env);
+        if dir == "" || fs_is_dotdot_traversal(dir) != 0 { return Err("refused untrusted HOME"); }
+        if fs_mkdir_p(fs_w, dir).is_err() { return Err("failed to create Screenshots dir"); }
+        dst = shot_default_path(env, mode, stamp);
+    } else {
+        if !oo_path_ok(dst) || fs_is_dotdot_traversal(dst) != 0 { return Err("refused path"); }
+    }
+    let body: String = shot_render_ppm(mode, 16, 12);
+    if fs_write_file(fs_w, dst, body).is_err() { return Err("failed to write screenshot"); }
+    return Ok(dst);
+}

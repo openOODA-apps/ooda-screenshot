@@ -1,0 +1,82 @@
+// # ooda-screenshot GUI State and COSMIC Layout Geometry
+//
+// Logline: Defines Screenshot capture mode, timer delay, preview canvas geometry, and Feedback state.
+// Setup: Imports env, ootheme, layout/split, widget/{color,style,app_menu,app_shell}, feedback.
+// Beats:
+//   1. Compute responsive COSMIC shell, mode tabs, delay strip, preview canvas, and controls.
+//   2. Initialize Screen/Window/Region capture defaults, global prefs, and Feedback modal state.
+
+import "ooda-standard/fs/process/env.oo";
+import "ooda-standard/core/app/ui/ootheme.oo";
+import "ooda-standard/core/app/ui/layout/split.oo";
+import "ooda-standard/core/app/ui/widget/color.oo";
+import "ooda-standard/core/app/ui/widget/style.oo";
+import "ooda-standard/core/app/ui/widget/app_menu.oo";
+import "ooda-standard/core/app/ui/widget/app_shell.oo";
+import "ooda-standard/core/app/feedback_grp/fb_schema.oo";
+import "ooda-standard/core/app/feedback_grp/fb_journal.oo";
+import "ooda-standard/core/app/feedback_grp/fb_modal.oo";
+import "core/capture.oo";
+
+pub type ShotGuiLayout = struct {
+    shell: UiShellRects,
+    tabs: UiRect,
+    delay_bar: UiRect,
+    preview: UiRect,
+    controls: UiRect
+};
+
+pub type ShotGuiState = struct {
+    mode: Int,
+    delay_s: Int,
+    cap_count: Int,
+    last_path: String,
+    cols: UiColors,
+    style: UiStyle,
+    prefs: UiAppPrefs,
+    menu: UiAppMenuState,
+    inp: UiShellInput,
+    status_msg: String,
+    status_lvl: Int,
+    pending_act: String,
+    fb_modal: FbModalState,
+    fb_journal: FbJournal
+};
+
+pub fn shot_layout_compute(w: Int, h: Int, sty: UiStyle, maxd: Bool) -> ShotGuiLayout {
+    let sh: UiShellRects = ui_app_shell_layout(w, h, sty, maxd, 26);
+    let b: UiRect = sh.body;
+    let cw: Int = if b.w > 28 { b.w - 28 } else { b.w };
+    let th: Int = 34;
+    let dh: Int = 38;
+    let ch: Int = 44;
+    let mut ph: Int = b.h - th - dh - ch - 40;
+    if ph < 140 { ph = 140; }
+    return ShotGuiLayout {
+        shell: sh,
+        tabs: ui_rect_new(b.x + 14, b.y + 8, cw, th),
+        delay_bar: ui_rect_new(b.x + 14, b.y + th + 14, cw, dh),
+        preview: ui_rect_new(b.x + 14, b.y + th + dh + 20, cw, ph),
+        controls: ui_rect_new(b.x + 14, b.y + th + dh + ph + 26, cw, ch)
+    };
+}
+
+pub fn shot_state_new(fs_r: &FsReadCap, env: &EnvCap) -> ShotGuiState {
+    let p: UiAppPrefs = ui_app_prefs_load(fs_r, env);
+    let cols: UiColors = ui_colors_from_theme(ootheme_resolve(p.theme));
+    let sty: UiStyle = ui_style_from_names(p.corner_mode, p.density_mode);
+    let mut ms: UiAppMenuState = ui_app_menu_state_new();
+    ms.checked_menu = 2;
+    ms.checked_row = 0;
+    return ShotGuiState {
+        mode: 0, delay_s: 0, cap_count: 0,
+        last_path: shot_default_path(env, 0, 1),
+        cols: cols, style: sty, prefs: p, menu: ms,
+        inp: UiShellInput { hover_x: 0 - 1, hover_y: 0 - 1, hover_id: 0,
+            tick: 0, last_hdr_tick: 0, last_hdr_x: 0 },
+        status_msg: "Ready to capture into ~/Pictures/Screenshots", status_lvl: 0, pending_act: "",
+        fb_modal: fb_modal_new(),
+        fb_journal: fb_journal_new(fb_meta_new("ooda-screenshot", "0.1.0", "apps", "gui", ""),
+            false, p.theme, "gui")
+    };
+}

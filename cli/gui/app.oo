@@ -1,0 +1,203 @@
+// # ooda-screenshot Wayland Window and Event Loop
+//
+// Logline: Pumps Screenshot Wayland window events, capture triggers, global prefs, Feedback modal.
+// Setup: Imports wayland/{window,input}, font, ootheme, app_{menu,shell}, chrono, feedback, GUI pages.
+// Beats:
+//   1. Handle mode tabs, delay selector buttons, bottom capture actions, keyboard shortcuts.
+//   2. Route active Feedback modal clicks/keys directly through fb_modal handlers.
+//   3. Poll ~/.openooda/{theme,ui}.oot and stop deterministically on --live-frames.
+
+import "ooda-standard/core/app/ui/wayland/window.oo";
+import "ooda-standard/core/app/ui/wayland/input.oo";
+import "ooda-standard/core/app/ui/font/sfnt.oo";
+import "ooda-standard/core/app/ui/font/atlas.oo";
+import "ooda-standard/core/app/ui/font/text.oo";
+import "ooda-standard/core/app/ui/ootheme.oo";
+import "ooda-standard/core/app/ui/widget/color.oo";
+import "ooda-standard/core/app/ui/widget/style.oo";
+import "ooda-standard/core/app/ui/widget/app_menu.oo";
+import "ooda-standard/core/app/ui/widget/app_shell.oo";
+import "ooda-standard/core/app/feedback_grp/fb_schema.oo";
+import "ooda-standard/core/app/feedback_grp/fb_modal.oo";
+import "cli/gui/state.oo";
+import "cli/gui/actions.oo";
+import "cli/gui/menu.oo";
+import "cli/gui/draw.oo";
+
+fn shot_clear_hover(st: &mut ShotGuiState) -> Void {
+    st.inp.hover_x = 0 - 1;
+    st.inp.hover_y = 0 - 1;
+    st.inp.hover_id = 0;
+}
+
+fn shot_handle_click(st: &mut ShotGuiState, lay: &ShotGuiLayout, ev: UiEvent) -> Bool {
+    if ui_rect_contains(lay.tabs, ev.x, ev.y) {
+        let tw: Int = (lay.tabs.w - 16) / 3;
+        let idx: Int = (ev.x - lay.tabs.x) / (tw + 8);
+        if idx >= 0 && idx < 3 {
+            st.mode = idx;
+            st.menu.checked_row = idx;
+            return true;
+        }
+    }
+    if ui_rect_contains(lay.delay_bar, ev.x, ev.y) {
+        let bw: Int = (lay.delay_bar.w - 16) / 3;
+        let idx: Int = (ev.x - lay.delay_bar.x) / (bw + 8);
+        if idx >= 0 && idx < 3 {
+            st.delay_s = if idx == 0 { 0 } else if idx == 1 { 3 } else { 5 };
+            return true;
+        }
+    }
+    if ui_rect_contains(lay.controls, ev.x, ev.y) {
+        let bw: Int = (lay.controls.w - 24) / 4;
+        let idx: Int = (ev.x - lay.controls.x) / (bw + 8);
+        if idx >= 0 && idx < 4 { return shot_click_controls(st, idx); }
+    }
+    return false;
+}
+
+fn shot_handle_key(win: &mut WlWindow, st: &mut ShotGuiState, ev: UiEvent) -> Bool {
+    if win.ctrl_held && (ev.key == 16 || ev.ch == "q" || ev.ch == "Q") {
+        win.closed = true;
+        return false;
+    }
+    let act: String = ui_evdev_action(ev.key);
+    if ui_app_menu_key(&mut st.menu, act) { return true; }
+    if act == "esc" {
+        win.closed = true;
+        return false;
+    }
+    if ev.ch == "1" || ev.ch == "2" || ev.ch == "3" {
+        st.mode = if ev.ch == "1" { 0 } else if ev.ch == "2" { 1 } else { 2 };
+        st.menu.checked_row = st.mode;
+        return true;
+    }
+    if ev.ch == "0" || ev.ch == "3" || ev.ch == "5" {
+        st.delay_s = if ev.ch == "0" { 0 } else if ev.ch == "3" { 3 } else { 5 };
+        return true;
+    }
+    if ev.ch == " " || act == "enter" {
+        st.pending_act = "capture_now";
+        return true;
+    }
+    return false;
+}
+
+fn shot_dispatch_event(fs_r: &FsReadCap, fs: &FsCap, env: &EnvCap, win: &mut WlWindow,
+    st: &mut ShotGuiState, ev: UiEvent, bf: &mut UiFont) -> Bool {
+    let lay: ShotGuiLayout = shot_layout_compute(win.width, win.height, st.style, win.maximized);
+    let mut dirty: Bool = ev.kind == 1;
+    if ev.kind == 2 { win.closed = true; }
+    if ev.kind == 3 {
+        let _sw: Bool = ui_app_menu_motion(lay.shell.menu_bar, bf, &mut st.menu, ev.x, ev.y);
+        if st.menu.open_menu >= 0 || st.menu.modal_kind > 0 || st.fb_modal.open {
+            shot_clear_hover(st);
+        } else {
+            st.inp.hover_x = ev.x;
+            st.inp.hover_y = ev.y;
+            st.inp.hover_id = ui_app_shell_hover_id(&lay.shell, ev.x, ev.y);
+        }
+        dirty = true;
+    }
+    let mut chr: Int = 0 - 1;
+    if ev.kind == 4 && ev.button == 272 {
+        chr = ui_app_shell_chrome_click(fs, win, &lay.shell, &mut st.inp, ev);
+    }
+    if chr == 2 { win.closed = true; }
+    if chr == 1 { dirty = true; }
+    if chr == 0 && shot_menu_handle_click(fs_r, env, st, bf, &lay, ev) {
+        if st.menu.open_menu >= 0 || st.menu.modal_kind > 0 || st.fb_modal.open {
+            shot_clear_hover(st);
+        }
+        dirty = true;
+    } else if chr == 0 && shot_handle_click(st, &lay, ev) { dirty = true; }
+    if ev.kind == 7 && shot_handle_key(win, st, ev) { dirty = true; }
+    return dirty;
+}
+
+fn shot_dispatch_fb(fs_r: &FsReadCap, fs_w: &FsWriteCap, env: &EnvCap, proc: &ProcessCap,
+    win: &mut WlWindow, st: &mut ShotGuiState, ev: UiEvent) -> Bool {
+    if ev.kind == 2 { win.closed = true; }
+    if ev.kind == 4 && ev.button == 272 {
+        let meta: FbAppMeta = fb_meta_new("ooda-screenshot", "0.1.0", "apps", "gui", "");
+        let rc: Int = fb_modal_click(fs_r, fs_w, env, proc, &meta, &mut st.fb_modal,
+            (win.width << 32) | win.height, (ev.x << 32) | ev.y);
+        if rc == 2 && st.fb_modal.status_msg != "" { st.status_msg = st.fb_modal.status_msg; }
+        return rc > 0;
+    }
+    if ev.kind == 7 {
+        if win.ctrl_held && (ev.key == 16 || ev.ch == "q" || ev.ch == "Q") {
+            win.closed = true;
+            return false;
+        }
+        return fb_modal_key(&mut st.fb_modal, ui_evdev_action(ev.key), ev.ch);
+    }
+    return false;
+}
+
+fn shot_apply_pending(fs_r: &FsReadCap, fs_w: &FsWriteCap, env: &EnvCap, proc: &ProcessCap,
+    tm: &TimeCap, win: &mut WlWindow, st: &mut ShotGuiState) -> Bool {
+    if st.pending_act == "" { return false; }
+    let act: String = st.pending_act;
+    st.pending_act = "";
+    if act == "quit" {
+        win.closed = true;
+        return false;
+    }
+    if act == "open_settings" {
+        let _ok: Bool = ui_app_shell_launch_settings(fs_r, env, proc);
+        return false;
+    }
+    if act == "capture_now" { return shot_act_capture(fs_w, env, tm, st); }
+    return false;
+}
+
+pub fn shot_gui_run(fs_r: &FsReadCap, fs_w: &FsWriteCap, fs: &FsCap, env: &EnvCap,
+    proc: &ProcessCap, tm: &TimeCap, ffi: &FfiCap, live_frames: Int) -> Result[Int, String] {
+    let mut win: WlWindow = wl_win_open(fs, fs_w, env, ffi, "Screenshot",
+        "org.openooda.screenshot", 760, 560);
+    if !win.ok || win.closed { return Err("ERR\tooda-screenshot\twayland_unavailable"); }
+    let mut bf: UiFont = ui_font_new(ttf_load_ui_font(fs_r, env, false), 14);
+    let mut st: ShotGuiState = shot_state_new(fs_r, env);
+    let mut dirty: Bool = true;
+    let mut rendered: Int = 0;
+    let mut iters: Int = 0;
+    while !win.closed && (live_frames <= 0 || (rendered < live_frames && iters < live_frames * 8)) {
+        iters = iters + 1;
+        let lay: ShotGuiLayout = shot_layout_compute(win.width, win.height, st.style, win.maximized);
+        if dirty {
+            let c: UiCanvas = wl_win_begin_frame(&mut win);
+            if c.addr != 0 {
+                shot_draw_frame(ffi, c, &mut bf, &st, &lay);
+                let _pr: Bool = wl_win_present(fs, &mut win);
+                dirty = false;
+                rendered = rendered + 1;
+            }
+        }
+        if shot_apply_pending(fs_r, fs_w, env, proc, tm, &mut win, &mut st) { dirty = true; }
+        let evs: List[UiEvent] = wl_win_poll(ffi, fs, &mut win, 50);
+        st.inp.tick = st.inp.tick + 1;
+        if list_len(&evs) == 0 && st.inp.tick % 30 == 0 {
+            let np: UiAppPrefs = ui_app_prefs_load(fs_r, env);
+            if np.theme != st.prefs.theme || np.corner_mode != st.prefs.corner_mode
+                || np.density_mode != st.prefs.density_mode {
+                st.prefs = np;
+                st.cols = ui_colors_from_theme(ootheme_resolve(np.theme));
+                st.style = ui_style_from_names(np.corner_mode, np.density_mode);
+                dirty = true;
+            }
+        }
+        let mut i: Int = 0;
+        while i < list_len(&evs) {
+            let ev: UiEvent = list_get(&evs, i);
+            let chg: Bool = if st.fb_modal.open
+                && (ev.kind == 2 || ev.kind == 7 || (ev.kind == 4 && ev.button == 272)) {
+                shot_dispatch_fb(fs_r, fs_w, env, proc, &mut win, &mut st, ev)
+            } else { shot_dispatch_event(fs_r, fs, env, &mut win, &mut st, ev, &mut bf) };
+            if chg { dirty = true; }
+            i = i + 1;
+        }
+    }
+    wl_win_close(ffi, fs, &mut win);
+    return Ok(0);
+}

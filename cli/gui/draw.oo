@@ -1,0 +1,98 @@
+// # ooda-screenshot Wayland Window Frame Renderer
+//
+// Logline: Renders COSMIC chrome, mode tabs, delay chips, capture preview frame, and 26px statusbar.
+// Setup: Imports ui/{text,color,style,draw,controls,app_shell}, core/capture, and cli/gui/{state,menu}.
+// Beats:
+//   1. Render Screen/Window/Region mode tabs and 0s/3s/5s delay selector buttons.
+//   2. Draw capture preview canvas reflecting selected target mode and last saved file path.
+//   3. Draw bottom action buttons, 26px COSMIC status bar, and dropdown/Feedback overlays.
+
+import "ooda-standard/core/app/ui/layout/split.oo";
+import "ooda-standard/core/app/ui/font/text.oo";
+import "ooda-standard/core/app/ui/widget/color.oo";
+import "ooda-standard/core/app/ui/widget/style.oo";
+import "ooda-standard/core/app/ui/widget/draw.oo";
+import "ooda-standard/core/app/ui/widget/controls.oo";
+import "ooda-standard/core/app/ui/widget/app_shell.oo";
+import "core/capture.oo";
+import "cli/gui/state.oo";
+import "cli/gui/menu.oo";
+
+fn shot_draw_tabs(ffi: &FfiCap, c: UiCanvas, bf: &mut UiFont, st: &ShotGuiState, r: UiRect) -> Void {
+    let br: Int = ui_style_radius(st.style, 2);
+    let tw: Int = (r.w - 16) / 3;
+    let mut i: Int = 0;
+    while i < 3 {
+        let lbl: String = if i == 0 { "Screen" } else if i == 1 { "Window" } else { "Region" };
+        let tr: UiRect = ui_rect_new(r.x + i * (tw + 8), r.y, tw, r.h);
+        let act: Bool = st.mode == i;
+        let hov: Bool = ui_rect_contains(tr, st.inp.hover_x, st.inp.hover_y);
+        ui_button_r(ffi, c, bf, tr, lbl, UiBtnStyle {
+            fill: if act { st.cols.selected } else if hov { st.cols.hover } else { st.cols.surface },
+            fg: st.cols.fg, border: if act || hov { st.cols.accent } else { st.cols.border }, rad: br
+        });
+        i = i + 1;
+    }
+}
+
+fn shot_draw_delay_bar(ffi: &FfiCap, c: UiCanvas, bf: &mut UiFont, st: &ShotGuiState,
+    r: UiRect) -> Void {
+    let br: Int = ui_style_radius(st.style, 2);
+    let bw: Int = (r.w - 16) / 3;
+    let mut i: Int = 0;
+    while i < 3 {
+        let d: Int = if i == 0 { 0 } else if i == 1 { 3 } else { 5 };
+        let dr: UiRect = ui_rect_new(r.x + i * (bw + 8), r.y, bw, r.h);
+        let act: Bool = st.delay_s == d;
+        ui_button_r(ffi, c, bf, dr, "Delay: " + d.to_string() + "s", UiBtnStyle {
+            fill: if act { st.cols.selected } else { st.cols.surface }, fg: st.cols.fg,
+            border: if act { st.cols.accent } else { st.cols.border }, rad: br
+        });
+        i = i + 1;
+    }
+}
+
+fn shot_draw_preview(ffi: &FfiCap, c: UiCanvas, bf: &mut UiFont, st: &ShotGuiState, r: UiRect) -> Void {
+    let br: Int = ui_style_radius(st.style, 1);
+    ui_card_r(ffi, c, r, st.cols.panel, st.cols.border, br);
+    let inner: UiRect = ui_rect_new(r.x + 24, r.y + 20, r.w - 48, r.h - 72);
+    ui_card_r(ffi, c, inner, st.cols.surface, st.cols.accent, br);
+    let cap_lbl: String = "Target: " + shot_mode_name(st.mode) + "   |   Timer: " +
+        st.delay_s.to_string() + "s   |   Saved: " + st.cap_count.to_string();
+    let _t1: Int = ui_text_draw(ffi, c, bf, inner.x + 18, inner.y + 20, cap_lbl,
+        ui_text_style(st.cols.fg, st.cols.surface, inner.w - 36));
+    let _t2: Int = ui_text_draw(ffi, c, bf, r.x + 24, r.y + r.h - 36,
+        "Last output: " + st.last_path, ui_text_style(st.cols.muted, st.cols.panel, r.w - 48));
+}
+
+fn shot_draw_controls(ffi: &FfiCap, c: UiCanvas, bf: &mut UiFont, st: &ShotGuiState,
+    r: UiRect) -> Void {
+    let br: Int = ui_style_radius(st.style, 2);
+    let bw: Int = (r.w - 24) / 4;
+    let mut i: Int = 0;
+    while i < 4 {
+        let lbl: String = if i == 0 { "Capture Now" }
+            else if i == 1 { "Delay " + st.delay_s.to_string() + "s" }
+            else if i == 2 { "Next Mode" } else { "Clear" };
+        let tr: UiRect = ui_rect_new(r.x + i * (bw + 8), r.y, bw, r.h);
+        let hov: Bool = ui_rect_contains(tr, st.inp.hover_x, st.inp.hover_y);
+        ui_button_r(ffi, c, bf, tr, lbl, UiBtnStyle {
+            fill: if hov { st.cols.hover } else { st.cols.surface }, fg: st.cols.fg,
+            border: if hov { st.cols.accent } else { st.cols.border }, rad: br
+        });
+        i = i + 1;
+    }
+}
+
+pub fn shot_draw_frame(ffi: &FfiCap, c: UiCanvas, bf: &mut UiFont, st: &ShotGuiState,
+    lay: &ShotGuiLayout) -> Void {
+    ui_app_shell_draw_frame(ffi, c, bf, "Screenshot", &lay.shell, st.cols, st.style, st.inp.hover_id);
+    shot_draw_menubar(ffi, c, bf, st, lay.shell.menu_bar);
+    shot_draw_tabs(ffi, c, bf, st, lay.tabs);
+    shot_draw_delay_bar(ffi, c, bf, st, lay.delay_bar);
+    shot_draw_preview(ffi, c, bf, st, lay.preview);
+    shot_draw_controls(ffi, c, bf, st, lay.controls);
+    ui_app_shell_status_draw(ffi, c, bf, lay.shell.status_bar, st.status_msg,
+        shot_mode_name(st.mode), st.status_lvl, st.cols);
+    shot_draw_overlays(ffi, c, bf, st, lay);
+}

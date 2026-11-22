@@ -1,0 +1,59 @@
+// # ooda-screenshot Functional Verification Suite
+//
+// Logline: Tests capture mode/delay validation, PPM image generation, GUI menu/layout, Feedback modal.
+// Setup: Imports capture, gui/state, gui/menu, ui widgets, feedback under explicit caps.
+// Beats:
+//   1. Verify mode/delay parsers, PPM frame rendering, and capture persistence into /tmp.
+//   2. Verify COSMIC Screenshot menu spec, Send Feedback..., 26px status bar, and modal scrub.
+//   3. Exercise real bin/ooda-screenshot --version CLI execution.
+
+import "core/capture.oo";
+import "cli/gui/state.oo";
+import "cli/gui/menu.oo";
+import "ooda-standard/fs/time/chrono.oo";
+import "ooda-standard/core/app/ui/widget/style.oo";
+import "ooda-standard/core/app/ui/widget/app_menu.oo";
+import "ooda-standard/core/app/feedback_grp/fb_schema.oo";
+import "ooda-standard/core/app/feedback_grp/fb_scrub.oo";
+import "ooda-standard/core/app/feedback_grp/fb_io.oo";
+import "ooda-standard/core/app/feedback_grp/fb_modal.oo";
+
+fn ok(cond: Bool, msg: String) -> Int {
+    if cond {
+        println("ok " + msg);
+        return 1;
+    }
+    println("FAIL " + msg);
+    return 0;
+}
+
+pub fn main(fs_r: &FsReadCap, fs_w: &FsWriteCap, env: &EnvCap, proc: &ProcessCap, tm: &TimeCap) -> Result[Int, String] {
+    let mut n: Int = 0;
+    n = n + ok(shot_parse_mode("screen") == 0 && shot_parse_mode("region") == 2 && shot_parse_delay("5") == 5,
+        "capture mode and delay parsers hold");
+    let wr: Result[String, String] = shot_write_capture(fs_w, env, "/tmp/ooda_shot_fn.ppm", 1, 100);
+    let body: String = match fs_read_file(fs_r, "/tmp/ooda_shot_fn.ppm") { Ok(s) => s, Err(_) => "" };
+    n = n + ok(wr.is_ok() && str_starts_with(body, "P3\n16 12\n255\n"),
+        "PPM screenshot capture file persisted");
+    let st: ShotGuiState = shot_state_new(fs_r, env);
+    let spec: UiAppMenuSpec = shot_menu_spec(&st);
+    let lay: ShotGuiLayout = shot_layout_compute(760, 560, ui_style_default(), false);
+    n = n + ok(ui_app_menu_validate(&spec) && spec.app_name == "Screenshot" &&
+        list_get(&spec.help_items, 1) == "Send Feedback..." && lay.shell.status_bar.h == 26,
+        "Screenshot COSMIC menu, Send Feedback, and 26px status bar hold");
+    let mut fm: FbModalState = fb_modal_new();
+    fb_modal_open(&mut fm, "");
+    let _k: Bool = fb_modal_key(&mut fm, "", "Sharp");
+    let meta: FbAppMeta = fb_meta_new("ooda-screenshot", "0.1.0", "apps", "gui", "");
+    let bdl: FbBundle = fb_bundle_new(&meta, "ux", 5, "Cap", fb_scrub_text("/home/me/s " + fm.note, 200), "");
+    n = n + ok(fm.open && str_contains(bdl.note, "[HOME]") && str_contains(fb_submit_url(&bdl), "/issues/new?"),
+        "Screenshot feedback modal scrubs path and routes url");
+    let v_out: String = match sys_exec(proc, "bin/ooda-screenshot", "--version") { Ok(s) => s, Err(_) => "" };
+    n = n + ok(str_contains(v_out, "ooda-screenshot 0.1.0") && chrono_now_ms(tm) >= 0,
+        "Screenshot CLI --version holds");
+    if n >= 5 {
+        println("PASS: ooda-screenshot functional tests (" + n.to_string() + ")");
+        return Ok(0);
+    }
+    return Ok(2);
+}

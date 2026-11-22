@@ -1,0 +1,55 @@
+// # ooda-screenshot GUI Actions Helper
+//
+// Logline: Performs PPM capture saving into ~/Pictures/Screenshots and updates timer delay state.
+// Setup: Imports core/capture, fs/time/chrono, and cli/gui/state under explicit caps.
+// Beats:
+//   1. Execute fail-closed screenshot save via shot_write_capture cleanly.
+//   2. Switch capture mode (Screen/Window/Region) and cycle 0s/3s/5s timer delays.
+
+import "ooda-standard/fs/time/chrono.oo";
+import "core/capture.oo";
+import "cli/gui/state.oo";
+
+pub fn shot_act_capture(fs_w: &FsWriteCap, env: &EnvCap, tm: &TimeCap, st: &mut ShotGuiState) -> Bool {
+    let stamp: Int = chrono_now_ms(tm) / 1000;
+    match shot_write_capture(fs_w, env, "", st.mode, stamp) {
+        Ok(p) => {
+            st.last_path = p;
+            st.cap_count = st.cap_count + 1;
+            st.status_msg = "Saved capture #" + st.cap_count.to_string() + ": " + p;
+            st.status_lvl = 0;
+        }
+        Err(e) => {
+            st.status_msg = e;
+            st.status_lvl = 2;
+        }
+    }
+    return true;
+}
+
+pub fn shot_cycle_delay(st: &mut ShotGuiState) -> Bool {
+    st.delay_s = if st.delay_s == 0 { 3 } else if st.delay_s == 3 { 5 } else { 0 };
+    st.status_msg = "Capture delay: " + st.delay_s.to_string() + "s";
+    st.status_lvl = 0;
+    return true;
+}
+
+pub fn shot_click_controls(st: &mut ShotGuiState, idx: Int) -> Bool {
+    if idx == 0 {
+        st.pending_act = "capture_now";
+        return true;
+    }
+    if idx == 1 { return shot_cycle_delay(st); }
+    if idx == 2 {
+        st.mode = (st.mode + 1) % 3;
+        st.menu.checked_row = st.mode;
+        st.status_msg = "Mode: " + shot_mode_name(st.mode);
+        return true;
+    }
+    if idx == 3 {
+        st.cap_count = 0;
+        st.status_msg = "Cleared capture preview counter";
+        return true;
+    }
+    return false;
+}

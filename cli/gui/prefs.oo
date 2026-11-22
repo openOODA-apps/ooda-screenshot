@@ -1,0 +1,41 @@
+// # ooda-screenshot Desktop Entry and Icon Installer
+//
+// Logline: Writes Start Menu .desktop entry (Name=Screenshot) and scalable SVG aperture icon.
+// Setup: Imports fs/os/fs, process/env, and fs_invariants under explicit FsWriteCap/EnvCap.
+// Beats:
+//   1. Validate HOME before creating XDG application and icon directories.
+//   2. Emit clean COSMIC .desktop launcher without ooda prefix in Name=.
+//   3. Emit scalable screenshot frame SVG icon for org.openooda.screenshot.
+
+import "ooda-standard/fs/os/fs.oo";
+import "ooda-standard/fs/process/env.oo";
+import "ooda-standard/fs/file/fs_grp/fs_invariants.oo";
+
+fn shot_icon_svg() -> String {
+    let a: String = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 64 64\">" +
+        "<rect width=\"64\" height=\"64\" rx=\"14\" fill=\"#1b2230\"/>" +
+        "<rect x=\"12\" y=\"16\" width=\"40\" height=\"32\" rx=\"5\" fill=\"#2a354b\" " +
+        "stroke=\"#6ee7b7\" stroke-width=\"3\" stroke-dasharray=\"5 3\"/>";
+    let b: String = "<circle cx=\"32\" cy=\"32\" r=\"9\" fill=\"none\" stroke=\"#f9a8d4\" stroke-width=\"3\"/>" +
+        "<circle cx=\"32\" cy=\"32\" r=\"3\" fill=\"#6ee7b7\"/>" +
+        "</svg>\n";
+    return a + b;
+}
+
+pub fn shot_desktop_install(fs_w: &FsWriteCap, env: &EnvCap) -> Bool {
+    let home: String = env_get_or(env, "HOME", "");
+    if home == "" || !oo_path_ok(home) { return false; }
+    let app_dir: String = home + "/.local/share/applications";
+    let ico_dir: String = home + "/.local/share/icons/hicolor/scalable/apps";
+    if fs_mkdir_p(fs_w, app_dir).is_err() || fs_mkdir_p(fs_w, ico_dir).is_err() { return false; }
+    let dpath: String = app_dir + "/org.openooda.screenshot.desktop";
+    let ipath: String = ico_dir + "/org.openooda.screenshot.svg";
+    let dbody: String = "[Desktop Entry]\nName=Screenshot\n" +
+        "Comment=Capture full screens, windows, or regions with delay and preview.\n" +
+        "Exec=" + home + "/.openooda/bin/ooda-screenshot --gui\n" +
+        "Terminal=false\nType=Application\nStartupNotify=true\n" +
+        "Icon=org.openooda.screenshot\nStartupWMClass=org.openooda.screenshot\n" +
+        "Categories=Utility;Graphics;COSMIC;\nKeywords=openOODA;ooda-screenshot;screenshot;capture;\n";
+    if fs_write_file(fs_w, ipath, shot_icon_svg()).is_err() { return false; }
+    return fs_write_file(fs_w, dpath, dbody).is_ok();
+}

@@ -1,0 +1,85 @@
+// # ooda-screenshot COSMIC Menu Bar (File, Edit, View, Help) & Overlays
+//
+// Logline: Declares Screenshot File/Edit/View/Help menu specs, draws overlays, routes menu clicks.
+// Setup: Imports text, input, app_menu, feedback_grp, and cli/gui/state under explicit caps.
+// Beats:
+//   1. Declare COSMIC 4-menu spec with Appearance Settings, delay options, Send Feedback...
+//   2. Render active Feedback modal or dropdown menu overlays cleanly over preview canvas.
+//   3. Handle menu actions for Capture Now, delay selection, mode switch, Settings, Feedback.
+
+import "ooda-standard/core/app/ui/font/text.oo";
+import "ooda-standard/core/app/ui/wayland/input.oo";
+import "ooda-standard/core/app/ui/widget/app_menu.oo";
+import "ooda-standard/core/app/feedback_grp/fb_schema.oo";
+import "ooda-standard/core/app/feedback_grp/fb_journal.oo";
+import "ooda-standard/core/app/feedback_grp/fb_modal.oo";
+import "cli/gui/state.oo";
+
+pub fn shot_menu_spec(st: &ShotGuiState) -> UiAppMenuSpec {
+    let fi: List[String] = list_push(list_push(list_push(list_new(),
+        "Capture Now (Space)"), "Appearance Settings..."), "Quit (Ctrl+Q)");
+    let ei: List[String] = list_push(list_push(list_push(list_new(),
+        "Delay: 0s"), "Delay: 3s"), "Delay: 5s");
+    let vi: List[String] = list_push(list_push(list_push(list_new(),
+        "Screen"), "Window"), "Region");
+    let h0: List[String] = list_push(list_push(list_new(), "Keyboard Shortcuts"), "Send Feedback...");
+    let hi: List[String] = list_push(h0, "About Screenshot");
+    return UiAppMenuSpec {
+        app_name: "Screenshot", app_ver: "0.1.0", file_items: fi, edit_items: ei,
+        view_items: vi, help_items: hi,
+        shortcuts_l1: "1-3 Capture Mode   0/3/5 Timer Delay",
+        shortcuts_l2: "Space Capture & Save   Esc Close Overlay or Window",
+        shortcuts_l3: "Ctrl+Q Quit   File -> Appearance Settings...",
+        about_l1: "Standalone Wayland Screenshot Capture Tool",
+        about_l2: "Saves captures to ~/Pictures/Screenshots/",
+        about_l3: "Theme: " + st.prefs.theme + " (ooda-settings)  |  Esc or click", popup_w: 246
+    };
+}
+
+pub fn shot_draw_menubar(ffi: &FfiCap, c: UiCanvas, bf: &mut UiFont, st: &ShotGuiState,
+    bar: UiRect) -> Void {
+    ui_app_menubar_draw(ffi, c, bf, bar, &st.menu, st.cols, st.style);
+}
+
+pub fn shot_draw_overlays(ffi: &FfiCap, c: UiCanvas, uf: &mut UiFont, st: &ShotGuiState,
+    lay: &ShotGuiLayout) -> Void {
+    if st.fb_modal.open {
+        let meta: FbAppMeta = fb_meta_new("ooda-screenshot", "0.1.0", "apps", "gui", "");
+        fb_modal_draw(ffi, c, uf, &meta, &st.fb_modal, st.cols, st.style);
+        return;
+    }
+    let spec: UiAppMenuSpec = shot_menu_spec(st);
+    ui_app_menu_draw_overlays(ffi, c, uf, lay.shell.menu_bar, &spec, &st.menu, st.cols, st.style);
+}
+
+fn shot_menu_exec(fs_r: &FsReadCap, env: &EnvCap, st: &mut ShotGuiState, om: Int, row: Int) -> Void {
+    if om == 0 && row == 0 { st.pending_act = "capture_now"; }
+    if om == 0 && row == 1 { st.pending_act = "open_settings"; }
+    if om == 0 && row == 2 { st.pending_act = "quit"; }
+    if om == 1 && row == 0 { st.delay_s = 0; }
+    if om == 1 && row == 1 { st.delay_s = 3; }
+    if om == 1 && row == 2 { st.delay_s = 5; }
+    if om == 2 && row >= 0 && row <= 2 {
+        st.mode = row;
+        st.menu.checked_menu = 2;
+        st.menu.checked_row = row;
+        fb_journal_hit(&mut st.fb_journal, false, "switch_mode");
+    }
+    if om == 3 && row == 1 {
+        st.menu.modal_kind = 0;
+        st.fb_journal.enabled = fb_journal_load_cfg(fs_r, env).journal_enabled;
+        fb_journal_hit(&mut st.fb_journal, false, "open_feedback");
+        fb_modal_open(&mut st.fb_modal, fb_journal_render(&st.fb_journal));
+    }
+}
+
+pub fn shot_menu_handle_click(fs_r: &FsReadCap, env: &EnvCap, st: &mut ShotGuiState,
+    bf: &mut UiFont, lay: &ShotGuiLayout, ev: UiEvent) -> Bool {
+    let spec: UiAppMenuSpec = shot_menu_spec(st);
+    let hit: UiAppMenuHit = ui_app_menu_click(lay.shell.menu_bar, bf, &spec, &mut st.menu, ev.x, ev.y);
+    if !hit.consumed { return false; }
+    if hit.menu_idx >= 0 && hit.item_idx >= 0 {
+        shot_menu_exec(fs_r, env, st, hit.menu_idx, hit.item_idx);
+    }
+    return true;
+}

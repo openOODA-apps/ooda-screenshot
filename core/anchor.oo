@@ -1,0 +1,11 @@
+// # ooda-screenshot Core Subsystem Anchor
+//
+// Logline: Core subsystem anchor binding PQC primitives and capture image writer.
+// Setup: Comment-plus-import shim importing core capture and security dependencies.
+// Beats:
+//   1. Bind ooda-standard/sec/pqc.oo for clean verification.
+//   2. Expose Screen/Window/Region capture validation and PPM image output.
+//   3. Keep core subsystem pure and acyclic under zero ambient authority.
+
+import "ooda-standard/sec/pqc.oo";
+import "core/capture.oo";

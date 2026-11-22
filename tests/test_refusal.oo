@@ -1,0 +1,46 @@
+// # ooda-screenshot Negative-Trust Refusal Suite
+//
+// Logline: Tests invalid mode/delay, traversal out paths, bad feedback flags, unknown CLI args fail closed.
+// Setup: Imports capture, feedback checks under explicit FsWriteCap/EnvCap/ProcessCap.
+// Beats:
+//   1. Refuse unknown capture modes, negative or oversized delays, and dotdot output paths.
+//   2. Refuse unknown feedback CLI flags, SECRET taint, and verify defaults OFF.
+//   3. Refuse unknown binary flags and invalid CLI capture options with exit code 2.
+
+import "core/capture.oo";
+import "ooda-standard/core/app/feedback_grp/fb_scrub.oo";
+import "ooda-standard/core/app/feedback_grp/fb_journal.oo";
+import "ooda-standard/core/app/feedback_grp/fb_cli.oo";
+
+fn rf_ok(cond: Bool, msg: String) -> Int {
+    if cond {
+        println("ok " + msg);
+        return 1;
+    }
+    println("FAIL " + msg);
+    return 0;
+}
+
+pub fn main(fs_w: &FsWriteCap, env: &EnvCap, proc: &ProcessCap) -> Result[Int, String] {
+    let mut n: Int = 0;
+    let bad_p: String = "/tmp/" + ".." + "/evil.ppm";
+    n = n + rf_ok(shot_parse_mode("bogus") < 0 && shot_parse_delay("-1") < 0 &&
+        shot_parse_delay("999") < 0 && shot_write_capture(fs_w, env, bad_p, 0, 1).is_err(),
+        "refused invalid mode, delay, and dotdot capture path");
+    let bad_fb: List[String] = list_push(list_push(list_new(), "feedback"), "--unknown-flag-zzz");
+    n = n + rf_ok(fb_cli_parse(&bad_fb).is_err() && !fb_scrub_safe("SECRET:k") &&
+        !fb_config_parse("").journal_enabled, "refused unknown feedback flag, taint & defaults OFF");
+    let rc1: Int = match sys_exec_wait(proc, "bin/ooda-screenshot", list_push(list_new(), "--bogus-flag")) {
+        Ok(c) => c, Err(_) => -1
+    };
+    let cap_bad: List[String] = list_push(list_push(list_push(list_new(), "capture"), "--mode"), "bad");
+    let rc2: Int = match sys_exec_wait(proc, "bin/ooda-screenshot", cap_bad) {
+        Ok(c) => c, Err(_) => -1
+    };
+    n = n + rf_ok(rc1 == 2 && rc2 == 2, "refused unknown CLI arg and invalid capture mode with exit 2");
+    if n == 3 {
+        println("PASS: ooda-screenshot refusal tests (3/3)");
+        return Ok(0);
+    }
+    return Ok(2);
+}

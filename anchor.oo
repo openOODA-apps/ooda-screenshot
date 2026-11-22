@@ -1,0 +1,23 @@
+// # ooda-screenshot Root Anchor Page
+//
+// Logline: Canonical root anchor page for the ooda-screenshot capture application.
+// Setup: Re-exports the core subsystem and CLI entrypoint with zero ambient authority.
+// Beats:
+//   1. Expose component version and identity accessors for CLI, GUI, and tests.
+//   2. Keep the root anchor acyclic above core/ and cli/ modules.
+//   3. Declare the shipped capability ceiling explicitly.
+
+import "core/anchor.oo";
+import "cli/main.oo";
+
+pub fn ooshot_version() -> String {
+    return "0.1.0";
+}
+
+pub fn ooshot_name() -> String {
+    return "ooda-screenshot";
+}
+
+pub fn ooshot_caps() -> String {
+    return "FsRead,FsWrite,Fs,Process,Env,Time,Ffi";
+}

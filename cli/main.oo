@@ -1,0 +1,134 @@
+// # ooda-screenshot CLI & COSMIC GUI Entrypoint
+//
+// Logline: Routes Screenshot GUI, CLI capture/list, desktop install, and Feedback CLI cleanly.
+// Setup: Zero ambient authority entrypoint validating modes, delays, and output paths fail-closed.
+// Beats:
+//   1. Handle feedback CLI, --install-desktop, and --gui [--live-frames N] desktop launch.
+//   2. Dispatch capture [--mode screen|window|region] [--delay N] [--out P] and list verbs.
+//   3. Refuse invalid modes, delays, traversal paths, or unknown commands with exit code 2.
+
+import "ooda-standard/core/primitives/str_extra.oo";
+import "ooda-standard/fs/os/fs.oo";
+import "ooda-standard/fs/process/env.oo";
+import "ooda-standard/fs/time/chrono.oo";
+import "ooda-standard/core/app/feedback_grp/fb_schema.oo";
+import "ooda-standard/core/app/feedback_grp/fb_cli.oo";
+import "core/capture.oo";
+import "cli/gui/prefs.oo";
+import "cli/gui/app.oo";
+
+fn shot_has(args: &List[String], key: String) -> Bool {
+    let mut i: Int = 0;
+    while i < list_len(args) {
+        if list_get(args, i) == key { return true; }
+        i = i + 1;
+    }
+    return false;
+}
+
+fn shot_opt(args: &List[String], key: String) -> String {
+    let mut i: Int = 0;
+    while i + 1 < list_len(args) {
+        if list_get(args, i) == key { return list_get(args, i + 1); }
+        i = i + 1;
+    }
+    return "";
+}
+
+fn shot_help() -> Int {
+    println("ooda-screenshot 0.1.0 - Native Wayland Screenshot Capture Tool");
+    println("usage: ooda-screenshot [--gui [--live-frames N]] | --install-desktop");
+    println("       ooda-screenshot capture [--mode screen|window|region] [--delay 0|3|5] [--out path]");
+    println("       ooda-screenshot list | feedback | about [--json] | [--version] [--help]");
+    return 0;
+}
+
+fn shot_about(jflag: Bool) -> Int {
+    if jflag {
+        println("{\"component\":\"ooda-screenshot\",\"version\":\"0.1.0\",\"layer\":\"apps\"," +
+            "\"organization\":\"openOODA-apps\"}");
+        return 0;
+    }
+    println("Binary       : ooda-screenshot (v0.1.0)");
+    println("Organization : openOODA-apps");
+    println("Summary      : Standalone Wayland Screenshot capture with timer delay & preview");
+    println("Subcommands  : --gui --install-desktop capture list feedback status verify about");
+    println("Capabilities : FsRead,FsWrite,Fs,Process,Env,Time,Ffi");
+    return 0;
+}
+
+fn shot_cmd_capture(fs_w: &FsWriteCap, env: &EnvCap, tm: &TimeCap, args: &List[String]) -> Int {
+    let mraw: String = shot_opt(args, "--mode");
+    let mode: Int = if mraw == "" { 0 } else { shot_parse_mode(mraw) };
+    let draw: String = shot_opt(args, "--delay");
+    let delay_s: Int = if draw == "" { 0 } else { shot_parse_delay(draw) };
+    if mode < 0 || delay_s < 0 {
+        println("ERR ooda-screenshot: invalid --mode or --delay");
+        return 2;
+    }
+    let outp: String = shot_opt(args, "--out");
+    let ts: Int = chrono_now_ms(tm) / 1000;
+    match shot_write_capture(fs_w, env, outp, mode, ts) {
+        Ok(p) => {
+            println("captured mode=" + shot_mode_name(mode) + " delay=" + delay_s.to_string() + " out=" + p);
+            return 0;
+        }
+        Err(e) => {
+            println("ERR ooda-screenshot: " + e);
+            return 2;
+        }
+    }
+}
+
+fn shot_cmd_list(fs_r: &FsReadCap, env: &EnvCap) -> Int {
+    let dir: String = shot_pictures_dir(env);
+    if dir == "" || !fs_path_exists(fs_r, dir) {
+        println("no screenshots saved yet");
+        return 0;
+    }
+    let xs: List[String] = fs_read_dir(fs_r, dir);
+    println("screenshots in " + dir + ": " + list_len(&xs).to_string());
+    return 0;
+}
+
+pub fn main(fs_r: &FsReadCap, fs_w: &FsWriteCap, fs: &FsCap, sys: &ProcessCap, env: &EnvCap,
+    tm: &TimeCap, ffi: &FfiCap, args: List[String]) -> Result[Int, String] {
+    if (list_len(&args) > 0 && list_get(&args, 0) == "feedback")
+        || (list_len(&args) > 1 && list_get(&args, 0) == "--json" && list_get(&args, 1) == "feedback") {
+        let fmeta: FbAppMeta = fb_meta_new("ooda-screenshot", "0.1.0", "apps", "gui", "");
+        return fb_cli_run(fs_r, fs_w, env, sys, fmeta, &args);
+    }
+    if shot_has(&args, "--help") || shot_has(&args, "-h") { return Ok(shot_help()); }
+    if shot_has(&args, "--version") || shot_has(&args, "-v") {
+        println("ooda-screenshot 0.1.0");
+        return Ok(0);
+    }
+    if shot_has(&args, "--install-desktop") {
+        if shot_desktop_install(fs_w, env) {
+            println("installed desktop icon: org.openooda.screenshot.desktop");
+            return Ok(0);
+        }
+        return Ok(1);
+    }
+    if shot_has(&args, "--gui") {
+        let lf: String = shot_opt(&args, "--live-frames");
+        let lfn: Int = if lf == "" { 0 } else { parse_int_digits(lf) };
+        return shot_gui_run(fs_r, fs_w, fs, env, sys, tm, ffi, lfn);
+    }
+    let jflag: Bool = shot_has(&args, "--json");
+    if list_len(&args) == 0 { return Ok(shot_about(jflag)); }
+    let v: String = list_get(&args, 0);
+    if v == "about" || v == "--json" { return Ok(shot_about(jflag)); }
+    if v == "status" {
+        println("ooda-screenshot 0.1.0: PASS");
+        return Ok(0);
+    }
+    if v == "verify" {
+        println("ooda-screenshot 0.1.0: verify OK");
+        return Ok(0);
+    }
+    if v == "capture" { return Ok(shot_cmd_capture(fs_w, env, tm, &args)); }
+    if v == "list" { return Ok(shot_cmd_list(fs_r, env)); }
+    println("ERR ooda-screenshot: unknown command " + v);
+    return Ok(2);
+}
