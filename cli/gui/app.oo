@@ -119,7 +119,7 @@ fn shot_dispatch_fb(fs_r: &FsReadCap, fs_w: &FsWriteCap, env: &EnvCap, proc: &Pr
     win: &mut WlWindow, st: &mut ShotGuiState, ev: UiEvent) -> Bool {
     if ev.kind == 2 { win.closed = true; }
     if ev.kind == 4 && ev.button == 272 {
-        let meta: FbAppMeta = fb_meta_new("ooda-screenshot", "0.1.0", "apps", "gui", "");
+        let meta: FbAppMeta = fb_meta_new("ooda-screenshot", "0.2.0", "apps", "gui", "");
         let rc: Int = fb_modal_click(fs_r, fs_w, env, proc, &meta, &mut st.fb_modal,
             (win.width << 32) | win.height, (ev.x << 32) | ev.y);
         if rc == 2 && st.fb_modal.status_msg != "" { st.status_msg = st.fb_modal.status_msg; }

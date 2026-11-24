@@ -1,5 +1,5 @@
 name=ooda-screenshot
-version=0.1.0
+version=0.2.0
 layer=apps
 description=Native Wayland Screenshot capture tool (Screen/Window/Region, timer delay) for openOODA.
 caps=FsRead,FsWrite,Fs,Process,Env,Time,Ffi

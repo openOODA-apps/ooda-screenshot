@@ -1,8 +1,7 @@
 # ooda-screenshot Makefile
 
-VERSION := 0.1.0
+VERSION := 0.2.0
 REPO_NAME := ooda-screenshot
-unexport OODA_OODAR_ROOT OODA_OOSTD_ROOT
 OODA_COMPILER ?= $(HOME)/.openooda/bin/ooda-compiler
 OODA_VERIFY ?= $(HOME)/.openooda/bin/ooda-verify
 OODA_STANDARD_ROOT ?= $(HOME)/.openooda/ooda-standard
@@ -21,7 +20,7 @@ REFUSE_BIN := .ooda-cache/test_refusal
 FIND_OO := find . -name "*.oo" -not -path "./.git/*" -not -path "./.ooda-cache/*" -not -path "./bin/*" -not -path "./dist/*"
 ENV := OO_LIST_AMBIENT_QUOTA=$(OO_LIST_AMBIENT_QUOTA) OODA_COMPILER=$(OODA_COMPILER) OODA_STANDARD_ROOT=$(OODA_STANDARD_ROOT) OODA_RUNTIME_ROOT=$(OODA_RUNTIME_ROOT) OODA_FS_READDIR=$(OODA_FS_READDIR) OODA_FS_WRITEDIR=$(OODA_FS_WRITEDIR) OODA_NO_JAIL=1 OODA_MODCACHE=$(OODA_MODCACHE)
 
-.PHONY: all build verify check line-cap file-law academy density vocab shape link-law det test install clean
+.PHONY: all build verify check line-cap file-law academy density vocab shape link-law det test gate install clean
 
 all: verify build
 
@@ -90,15 +89,25 @@ test: $(BIN)
 	@mkdir -p .ooda-cache
 	@$(ENV) $(OODA_COMPILER) build tests/test_functional.oo -o $(FUNC_BIN) > /dev/null
 	@$(ENV) $(OODA_COMPILER) build tests/test_refusal.oo -o $(REFUSE_BIN) > /dev/null
-	@$(ENV) ./$(FUNC_BIN)
-	@$(ENV) ./$(REFUSE_BIN)
+	@$(ENV) $(OODA_COMPILER) build tests/test_capture_g5.oo -o .ooda-cache/test_capture_g5 > /dev/null
+	@OODA_LEAK_CHECK=1 $(ENV) ./$(FUNC_BIN)
+	@OODA_LEAK_CHECK=1 $(ENV) ./$(REFUSE_BIN)
+	@OODA_LEAK_CHECK=1 $(ENV) ./.ooda-cache/test_capture_g5
 	@./$(BIN) --version | grep -q "ooda-screenshot $(VERSION)"
 	@./$(BIN) --help | grep -q "ooda-screenshot $(VERSION)"
 	@$(ENV) ./$(BIN) capture --mode region --delay 0 --out /tmp/ooda_shot_mk.ppm | grep -q "captured"
 	@rm -f /tmp/ooda_shot_mk.ppm
+	@$(ENV) ./$(BIN) pick --rgb 12,175,240 --json | grep -q '"pass":true'
+	@$(ENV) ./$(BIN) ocr --json | grep -q '"command":"ocr"'
 	@./$(BIN) about --json | grep -q '"component":"ooda-screenshot"'
 	@./$(BIN) --bogus-flag >/dev/null 2>&1; [ $$? -eq 2 ]
 	@echo "ALL TESTS PASSED"
+
+gate: $(BIN)
+	@$(ENV) $(OODA_VERIFY) cycle $(CURDIR) --json | grep -q '"quorum_mask":255'
+	@$(ENV) $(OODA_VERIFY) mem-gate $(CURDIR) --json | grep -q '"legacy_shims":0'
+	@$(ENV) $(OODA_VERIFY) proof $(CURDIR) --json | grep -q '"extra_caps":0'
+	@echo "PASS: ooda-screenshot gate"
 
 install: $(BIN)
 	@mkdir -p $(HOME)/.openooda/bin

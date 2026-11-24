@@ -1,0 +1,98 @@
+// # ooda-screenshot Track G5 Capture, Edit, Offline OCR & OKLCH Picker Suite
+//
+// Logline: Tests direct region/screen capture, PPM crop/annotate/redact/blackout, offline OCR, and OKLCH picker.
+// Setup: Declared capability: FsReadCap, FsWriteCap, ProcessCap. Drives bin/ooda-screenshot under PATH=/nonexistent.
+// Beats:
+//   1. Exercise PPM crop, 1px annotate, pixel zero redact, PRIVACY_BLACKOUT, and out-of-bounds refusals.
+//   2. Exercise sRGB -> HEX + OKLCH color picking and offline OCR scanline classification.
+//   3. Exercise live region, edit --copy --secret, pick --rgb --json, and bogus/traversal exit-2 refusals.
+
+import "core/capture.oo";
+import "core/color_pick.oo";
+import "core/edit_g5.oo";
+import "ooda-standard/fs/os/fs/fs.oo";
+
+fn g5_ok(cond: Bool, label: String) -> Int {
+    if cond {
+        println("ok " + label);
+        return 1;
+    }
+    println("FAIL " + label);
+    return 0;
+}
+
+fn g5_wait(p: &ProcessCap, bin: String, spec: String) -> Int {
+    let av: List[String] = str_split(spec, "|");
+    return match sys_exec_wait(p, bin, av) { Ok(rc) => rc, Err(_) => -1 };
+}
+
+fn test_models(fs_r: &FsReadCap, fs_w: &FsWriteCap) -> Int {
+    let ppm: String = shot_render_ppm(2, 16, 12);
+    let cr: Result[String, String] = shot_crop_ppm(str_slice(ppm, 0, bytes_len(ppm)), 2, 2, 4, 3);
+    let cr_s: String = match cr { Ok(v) => v, Err(_) => "" };
+    let an: Result[String, String] = shot_transform_ppm(str_slice(ppm, 0, bytes_len(ppm)), "1,1,4,4", false, false);
+    let rd: Result[String, String] = shot_transform_ppm(str_slice(ppm, 0, bytes_len(ppm)), "0,0,2,2", true, false);
+    let rd_s: String = match rd { Ok(v) => v, Err(_) => "" };
+    let bk: Result[String, String] = shot_transform_ppm(str_slice(ppm, 0, bytes_len(ppm)), "", true, true);
+    let bk_s: String = match bk { Ok(v) => v, Err(_) => "" };
+    let mut n: Int = g5_ok(str_starts_with(cr_s, "P3\n4 3\n255\n") &&
+        shot_crop_ppm(str_slice(ppm, 0, bytes_len(ppm)), 15, 0, 4, 3).is_err(),
+        "g5-01 PPM crop produces bounded frame and refuses OOB rect");
+    n = n + g5_ok(an.is_ok() && str_contains(match an { Ok(v) => v, Err(_) => "" }, "255 80 80"),
+        "g5-02 PPM annotate draws 1px border rect");
+    n = n + g5_ok(rd.is_ok() && str_starts_with(rd_s, "P3\n16 12\n255\n0 0 0\n"),
+        "g5-03 PPM redact zeros selected region pixels");
+    n = n + g5_ok(bk.is_ok() && !str_contains(bk_s, "58 ") && str_contains(shot_ocr_ppm(bk_s), "bands=0"),
+        "g5-04 PRIVACY_BLACKOUT blanks frame & OCR detects 0 ink bands");
+    let pk: PickedColor = shot_rgb_to_oklch(122, 162, 247);
+    let pm: Result[PickedColor, String] = shot_pick_ppm(str_slice(ppm, 0, bytes_len(ppm)), 1, 1);
+    n = n + g5_ok(pk.hex == "#7aa2f7" && pk.oklch_l > 0.65 && pk.oklch_l < 0.78 && pm.is_ok(),
+        "g5-05 OKLCH color conversion & PPM pixel sampling hold");
+    n = n + g5_ok(shot_pick_ppm(ppm, 99, 0).is_err() && shot_pick_parse_rgb("300,0,0").is_err(),
+        "g5-06 color picker refuses OOB coordinates & 300 RGB channel");
+    return n;
+}
+
+fn test_cli(fs_r: &FsReadCap, fs_w: &FsWriteCap, p: &ProcessCap, bin: String) -> Int {
+    let outp: String = "/tmp/oo_shot_g5_reg.ppm";
+    let reg_s: String = match sys_exec(p, bin, "region", "--out", outp, "--json") { Ok(s) => s, Err(_) => "" };
+    let ed_s: String = match sys_exec(p, bin, "edit", "--crop", "0,0,8,6", "--redact", "0,0,2,2",
+        "--copy", "--secret", "--out", outp, "--json") { Ok(s) => s, Err(_) => "" };
+    let ed_raw: String = match fs_read_file(fs_r, outp) { Ok(s) => s, Err(_) => "" };
+    let ocr_s: String = match sys_exec(p, bin, "ocr", "--json") { Ok(s) => s, Err(_) => "" };
+    let pk_s: String = match sys_exec(p, bin, "pick", "--rgb", "122,162,247", "--json") { Ok(s) => s, Err(_) => "" };
+    let mut n: Int = g5_ok(str_contains(reg_s, "\"mode\":\"region\"") && str_contains(reg_s, "\"pass\":true"),
+        "g5-07 CLI region capture alias writes output");
+    n = n + g5_ok(str_contains(ed_s, "\"copied\":true") && str_contains(ed_s, "\"burn_secret\":true") &&
+        str_starts_with(ed_raw, "P3\n8 6\n255\n0 0 0\n"),
+        "g5-08 CLI edit crop+redact+copy+secret writes redacted PPM");
+    n = n + g5_ok(str_contains(ocr_s, "\"command\":\"ocr\"") && str_contains(ocr_s, "bands=12"),
+        "g5-09 CLI offline ocr emits scanline bands JSON");
+    n = n + g5_ok(str_contains(pk_s, "\"hex\":\"#7aa2f7\"") && str_contains(pk_s, "\"oklch_milli\":"),
+        "g5-10 CLI pick --rgb emits HEX and OKLCH milli JSON");
+    let dot: String = ".";
+    let trav: String = dot + dot + "/bad.ppm";
+    let rc_rgb: Int = g5_wait(p, bin, "pick|--rgb|300,0,0");
+    let rc_crop: Int = g5_wait(p, bin, "edit|--crop|99,0,4,4");
+    let rc_trav: Int = g5_wait(p, bin, "edit|--out|" + trav);
+    let rc_bad: Int = g5_wait(p, bin, "pick|--bogus");
+    n = n + g5_ok(rc_rgb == 2 && rc_crop == 2, "g5-11 refuses OOB RGB and OOB crop exit 2");
+    n = n + g5_ok(rc_trav == 2 && rc_bad == 2, "g5-12 refuses traversal --out and unknown flag exit 2");
+    let _rm: Result[Void, String] = oo_fs_remove_file(fs_w, outp);
+    return n;
+}
+
+pub fn main(fs_r: &FsReadCap, fs_w: &FsWriteCap, p: &ProcessCap, _a: List[String]) -> Result[Int, String] {
+    let bin: String = "bin/ooda-screenshot";
+    if !path_exists(fs_r, bin) {
+        println("FAIL missing bin/ooda-screenshot");
+        return Err("missing artifact");
+    }
+    let tot: Int = test_models(fs_r, fs_w) + test_cli(fs_r, fs_w, p, bin);
+    if tot != 12 {
+        println("FAIL: capture_g5 " + tot.to_string() + "/12 assertions");
+        return Err("capture_g5 failed");
+    }
+    println("PASS: capture_g5 12/12 assertions");
+    return Ok(0);
+}

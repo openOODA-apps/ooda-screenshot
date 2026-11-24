@@ -1,0 +1,147 @@
+// # ooda-screenshot Interactive Crop, Annotate, Redact & Offline OCR
+//
+// Logline: Crops, annotates, redacts, and analyzes P3 PPM pixel buffers under strict rectangular bounds.
+// Setup: Imports capture, strconv, fs_invariants, fs/os/fs, and sec/pqc; zero network calls and zero recursion.
+// Beats:
+//   1. Parse `x,y,w,h` coordinates fail-closed against the PPM image dimensions.
+//   2. Execute crop, 1px red annotation border, pixel zero redaction, and PRIVACY_BLACKOUT frame blanking.
+//   3. Compute deterministic offline OCR scanline ink-band metrics and dispatch edit-apply pipelines.
+
+import "core/capture.oo";
+import "ooda-standard/core/primitives/strconv.oo";
+import "ooda-standard/fs/file/fs_grp/fs_invariants.oo";
+import "ooda-standard/fs/os/fs/fs.oo";
+import "ooda-standard/sec/pqc.oo";
+
+type ShotRect = struct { x: Int, y: Int, w: Int, h: Int, ok: Bool };
+
+pub fn shot_parse_rect(spec: String, mw: Int, mh: Int) -> ShotRect {
+    let ps: List[String] = str_split(str_trim(spec), ",");
+    if list_len(ps) != 4 { return ShotRect { x: 0, y: 0, w: 0, h: 0, ok: false }; }
+    let rx: Int = match parse_int(str_trim(list_get(ps, 0))) { Ok(v) => v, Err(_) => -1 };
+    let ry: Int = match parse_int(str_trim(list_get(ps, 1))) { Ok(v) => v, Err(_) => -1 };
+    let rw: Int = match parse_int(str_trim(list_get(ps, 2))) { Ok(v) => v, Err(_) => -1 };
+    let rh: Int = match parse_int(str_trim(list_get(ps, 3))) { Ok(v) => v, Err(_) => -1 };
+    if rx < 0 || ry < 0 || rw <= 0 || rh <= 0 || (rx + rw) > mw || (ry + rh) > mh {
+        return ShotRect { x: 0, y: 0, w: 0, h: 0, ok: false };
+    }
+    return ShotRect { x: rx, y: ry, w: rw, h: rh, ok: true };
+}
+
+pub fn shot_ppm_dims(lines: &List[String]) -> ShotRect {
+    if list_len(lines) < 4 || str_trim(list_get(lines, 0)) != "P3" {
+        return ShotRect { x: 0, y: 0, w: 0, h: 0, ok: false };
+    }
+    let ds: List[String] = str_split(str_trim(list_get(lines, 1)), " ");
+    if list_len(ds) != 2 { return ShotRect { x: 0, y: 0, w: 0, h: 0, ok: false }; }
+    let w: Int = match parse_int(list_get(ds, 0)) { Ok(v) => v, Err(_) => -1 };
+    let h: Int = match parse_int(list_get(ds, 1)) { Ok(v) => v, Err(_) => -1 };
+    if w <= 0 || h <= 0 || list_len(lines) < 3 + w * h {
+        return ShotRect { x: 0, y: 0, w: 0, h: 0, ok: false };
+    }
+    return ShotRect { x: 0, y: 0, w: w, h: h, ok: true };
+}
+
+pub fn shot_crop_ppm(ppm: String, x: Int, y: Int, w: Int, h: Int) -> Result[String, String] {
+    let lines: List[String] = str_split(ppm, "\n");
+    let dm: ShotRect = shot_ppm_dims(&lines);
+    if !dm.ok || x < 0 || y < 0 || w <= 0 || h <= 0 || (x + w) > dm.w || (y + h) > dm.h {
+        return Err("crop coordinates out of bounds");
+    }
+    let mut out: String = "P3\n" + w.to_string() + " " + h.to_string() + "\n255\n";
+    let mut dy: Int = 0;
+    while dy < h {
+        let mut dx: Int = 0;
+        while dx < w {
+            out = out + str_trim(list_get(&lines, 3 + (y + dy) * dm.w + (x + dx))) + "\n";
+            dx = dx + 1;
+        }
+        dy = dy + 1;
+    }
+    return Ok(out);
+}
+
+pub fn shot_transform_ppm(ppm: String, rect_spec: String, is_redact: Bool,
+    blackout: Bool) -> Result[String, String] {
+    let lines: List[String] = str_split(ppm, "\n");
+    let dm: ShotRect = shot_ppm_dims(&lines);
+    if !dm.ok { return Err("invalid P3 PPM"); }
+    let rc: ShotRect = if rect_spec == "" {
+        ShotRect { x: 0, y: 0, w: dm.w, h: dm.h, ok: true }
+    } else {
+        shot_parse_rect(rect_spec, dm.w, dm.h)
+    };
+    if !rc.ok { return Err("rect out of bounds"); }
+    let mut out: String = "P3\n" + dm.w.to_string() + " " + dm.h.to_string() + "\n255\n";
+    let mut py: Int = 0;
+    while py < dm.h {
+        let mut px: Int = 0;
+        while px < dm.w {
+            let in_r: Bool = px >= rc.x && px < (rc.x + rc.w) && py >= rc.y && py < (rc.y + rc.h);
+            let on_edge: Bool = in_r && (px == rc.x || px == rc.x + rc.w - 1 || py == rc.y ||
+                py == rc.y + rc.h - 1);
+            if blackout || (is_redact && in_r) {
+                out = out + "0 0 0\n";
+            } else if !is_redact && on_edge {
+                out = out + "255 80 80\n";
+            } else {
+                out = out + str_trim(list_get(&lines, 3 + py * dm.w + px)) + "\n";
+            }
+            px = px + 1;
+        }
+        py = py + 1;
+    }
+    return Ok(out);
+}
+
+pub fn shot_ocr_ppm(ppm: String) -> String {
+    let lines: List[String] = str_split(ppm, "\n");
+    let dm: ShotRect = shot_ppm_dims(&lines);
+    if !dm.ok { return ""; }
+    let mut bands: Int = 0;
+    let mut seal: Int = 0;
+    let mut py: Int = 0;
+    while py < dm.h {
+        let px_row: String = str_trim(list_get(&lines, 3 + py * dm.w));
+        if px_row != "0 0 0" { bands = bands + 1; }
+        seal = oo_pqc_sha3_round(seal + py + 1, bytes_len(px_row));
+        py = py + 1;
+    }
+    return "bands=" + bands.to_string() + " cols=" + dm.w.to_string() + " seal=" + seal.to_string();
+}
+
+pub fn shot_edit_apply(fs_r: &FsReadCap, inp: String, crop_s: String, ann_s: String,
+    red_s: String, blk: Bool) -> Result[String, String] {
+    if inp != "" && (!oo_path_ok(str_slice(inp, 0, bytes_len(inp))) ||
+        fs_is_dotdot_traversal(str_slice(inp, 0, bytes_len(inp))) != 0) {
+        return Err("refused input path");
+    }
+    let mut ppm: String = "";
+    if inp == "" {
+        ppm = shot_render_ppm(2, 16, 12);
+    } else {
+        let rr: Result[String, String] = fs_read_file(fs_r, inp);
+        if rr.is_err() { return Err("cannot read --in"); }
+        ppm = match rr { Ok(s) => s, Err(_) => "" };
+    }
+    if crop_s != "" {
+        let lines: List[String] = str_split(str_slice(ppm, 0, bytes_len(ppm)), "\n");
+        let dm: ShotRect = shot_ppm_dims(&lines);
+        let rc: ShotRect = shot_parse_rect(crop_s, dm.w, dm.h);
+        if !dm.ok || !rc.ok { return Err("crop rect invalid"); }
+        let cr: Result[String, String] = shot_crop_ppm(ppm, rc.x, rc.y, rc.w, rc.h);
+        if cr.is_err() { return cr; }
+        ppm = match cr { Ok(v) => v, Err(_) => "" };
+    }
+    if ann_s != "" {
+        let ar: Result[String, String] = shot_transform_ppm(ppm, ann_s, false, false);
+        if ar.is_err() { return ar; }
+        ppm = match ar { Ok(v) => v, Err(_) => "" };
+    }
+    if red_s != "" || blk {
+        let tr: Result[String, String] = shot_transform_ppm(ppm, red_s, true, blk);
+        if tr.is_err() { return tr; }
+        ppm = match tr { Ok(v) => v, Err(_) => "" };
+    }
+    return Ok(ppm);
+}

@@ -1,0 +1,106 @@
+// # ooda-screenshot Pixel Color Picker & sRGB->OKLCH Converter
+//
+// Logline: Extracts pixels from P3 PPM capture frames and converts sRGB values to HEX, RGB, and perceptual OKLCH.
+// Setup: Imports core/math/trig.oo, strconv.oo, and json_writer.oo; zero recursion and bounds-checked pixel reads.
+// Beats:
+//   1. Parse sRGB triplets (0..255) and format canonical #rrggbb hex strings cleanly.
+//   2. Convert sRGB -> linear sRGB -> Oklab -> OKLCH (L, C, H degrees) using math_pow and math_atan2.
+//   3. Sample (x, y) pixels from P3 PPM frames fail-closed on malformed headers or out-of-bounds coordinates.
+
+import "ooda-standard/core/math/constants.oo";
+import "ooda-standard/core/math/trig.oo";
+import "ooda-standard/hw/display/color_fp16.oo";
+import "ooda-standard/core/primitives/strconv.oo";
+import "ooda-standard/core/format/json_writer.oo";
+
+pub type PickedColor = struct {
+    r: Int,
+    g: Int,
+    b: Int,
+    hex: String,
+    oklch_l: Float,
+    oklch_c: Float,
+    oklch_h: Float
+};
+
+fn hex_dig(d: Int) -> String {
+    if d < 10 { return d.to_string(); }
+    if d == 10 { return "a"; }
+    if d == 11 { return "b"; }
+    if d == 12 { return "c"; }
+    if d == 13 { return "d"; }
+    if d == 14 { return "e"; }
+    return "f";
+}
+
+fn srgb_to_lin(u8: Int) -> Float {
+    let x: Float = int_to_float(u8) / 255.0;
+    if x <= 0.04045 { return x / 12.92; }
+    return math_pow((x + 0.055) / 1.055, 2.4);
+}
+
+pub fn shot_rgb_to_oklch(r: Int, g: Int, b: Int) -> PickedColor {
+    let hex: String = "#" + hex_dig(r / 16) + hex_dig(r % 16) + hex_dig(g / 16) + hex_dig(g % 16)
+        + hex_dig(b / 16) + hex_dig(b % 16);
+    let lr: Float = srgb_to_lin(r);
+    let lg: Float = srgb_to_lin(g);
+    let lb: Float = srgb_to_lin(b);
+    let l0: Float = 0.4122214708 * lr + 0.5363325363 * lg + 0.0514459929 * lb;
+    let m0: Float = 0.2119034982 * lr + 0.6806995451 * lg + 0.1073969566 * lb;
+    let s0: Float = 0.0883024619 * lr + 0.2817188376 * lg + 0.6299787005 * lb;
+    let l1: Float = if l0 > 0.0 { math_pow(l0, 1.0 / 3.0) } else { 0.0 };
+    let m1: Float = if m0 > 0.0 { math_pow(m0, 1.0 / 3.0) } else { 0.0 };
+    let s1: Float = if s0 > 0.0 { math_pow(s0, 1.0 / 3.0) } else { 0.0 };
+    let ol: Float = 0.2104542553 * l1 + 0.7936177850 * m1 - 0.0040720468 * s1;
+    let oa: Float = 1.9779984951 * l1 - 2.4285922050 * m1 + 0.4505937099 * s1;
+    let ob: Float = 0.0259040371 * l1 + 0.7827717662 * m1 - 0.8086757660 * s1;
+    let oc: Float = math_sqrt(oa * oa + ob * ob);
+    let mut oh: Float = math_atan2(ob, oa) * (180.0 / math_pi());
+    if oh < 0.0 { oh = oh + 360.0; }
+    if oc < 0.00001 { oh = 0.0; }
+    return PickedColor { r: r, g: g, b: b, hex: hex, oklch_l: ol, oklch_c: oc, oklch_h: oh };
+}
+
+pub fn shot_pick_parse_rgb(spec: String) -> Result[PickedColor, String] {
+    let ps: List[String] = str_split(str_trim(spec), ",");
+    if list_len(ps) != 3 { return Err("rgb needs r,g,b"); }
+    let r: Int = match parse_int(str_trim(list_get(ps, 0))) { Ok(v) => v, Err(_) => -1 };
+    let g: Int = match parse_int(str_trim(list_get(ps, 1))) { Ok(v) => v, Err(_) => -1 };
+    let b: Int = match parse_int(str_trim(list_get(ps, 2))) { Ok(v) => v, Err(_) => -1 };
+    if r < 0 || r > 255 || g < 0 || g > 255 || b < 0 || b > 255 {
+        return Err("rgb channel out of 0..255");
+    }
+    return Ok(shot_rgb_to_oklch(r, g, b));
+}
+
+pub fn shot_pick_ppm(ppm: String, x: Int, y: Int) -> Result[PickedColor, String] {
+    let lines: List[String] = str_split(ppm, "\n");
+    if list_len(lines) < 4 || str_trim(list_get(lines, 0)) != "P3" {
+        return Err("invalid P3 PPM");
+    }
+    let dims: List[String] = str_split(str_trim(list_get(lines, 1)), " ");
+    if list_len(dims) != 2 { return Err("invalid PPM dimensions"); }
+    let w: Int = match parse_int(list_get(dims, 0)) { Ok(v) => v, Err(_) => -1 };
+    let h: Int = match parse_int(list_get(dims, 1)) { Ok(v) => v, Err(_) => -1 };
+    if x < 0 || x >= w || y < 0 || y >= h || list_len(lines) < 3 + w * h {
+        return Err("pixel coordinates out of bounds");
+    }
+    let px: String = str_trim(list_get(lines, 3 + y * w + x));
+    let ps: List[String] = str_split(px, " ");
+    if list_len(ps) != 3 { return Err("invalid pixel row"); }
+    let r: Int = match parse_int(list_get(ps, 0)) { Ok(v) => v, Err(_) => -1 };
+    let g: Int = match parse_int(list_get(ps, 1)) { Ok(v) => v, Err(_) => -1 };
+    let b: Int = match parse_int(list_get(ps, 2)) { Ok(v) => v, Err(_) => -1 };
+    if r < 0 || r > 255 || g < 0 || g > 255 || b < 0 || b > 255 { return Err("invalid pixel"); }
+    return Ok(shot_rgb_to_oklch(r, g, b));
+}
+
+pub fn shot_pick_json(c: PickedColor, ver: String) -> String {
+    let lm: Int = disp_float_round_bits(c.oklch_l * 1000.0, 512);
+    let cm: Int = disp_float_round_bits(c.oklch_c * 1000.0, 512);
+    let hd: Int = disp_float_round_bits(c.oklch_h, 256);
+    return "{\"component\":\"ooda-screenshot\",\"version\":\"" + json_escape_str(ver) +
+        "\",\"command\":\"pick\",\"hex\":\"" + json_escape_str(c.hex) + "\",\"rgb\":[" +
+        c.r.to_string() + "," + c.g.to_string() + "," + c.b.to_string() + "],\"oklch_milli\":{\"l\":" +
+        lm.to_string() + ",\"c\":" + cm.to_string() + ",\"h\":" + hd.to_string() + "},\"pass\":true}";
+}

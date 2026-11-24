@@ -44,12 +44,12 @@ pub fn main(fs_r: &FsReadCap, fs_w: &FsWriteCap, env: &EnvCap, proc: &ProcessCap
     let mut fm: FbModalState = fb_modal_new();
     fb_modal_open(&mut fm, "");
     let _k: Bool = fb_modal_key(&mut fm, "", "Sharp");
-    let meta: FbAppMeta = fb_meta_new("ooda-screenshot", "0.1.0", "apps", "gui", "");
+    let meta: FbAppMeta = fb_meta_new("ooda-screenshot", "0.2.0", "apps", "gui", "");
     let bdl: FbBundle = fb_bundle_new(&meta, "ux", 5, "Cap", fb_scrub_text("/home/me/s " + fm.note, 200), "");
     n = n + ok(fm.open && str_contains(bdl.note, "[HOME]") && str_contains(fb_submit_url(&bdl), "/issues/new?"),
         "Screenshot feedback modal scrubs path and routes url");
     let v_out: String = match sys_exec(proc, "bin/ooda-screenshot", "--version") { Ok(s) => s, Err(_) => "" };
-    n = n + ok(str_contains(v_out, "ooda-screenshot 0.1.0") && chrono_now_ms(tm) >= 0,
+    n = n + ok(str_contains(v_out, "ooda-screenshot 0.2.0") && chrono_now_ms(tm) >= 0,
         "Screenshot CLI --version holds");
     if n >= 5 {
         println("PASS: ooda-screenshot functional tests (" + n.to_string() + ")");

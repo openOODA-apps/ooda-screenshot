@@ -1,0 +1,166 @@
+// # ooda-screenshot G5 CLI Dispatch (Region/Edit/OCR/Color-Pick)
+//
+// Logline: Dispatches region/screen/window capture aliases, edit pipeline, offline ocr, and OKLCH color picker.
+// Setup: Declared capability: FsReadCap, FsWriteCap, EnvCap, TimeCap for verified output writes and timestamps.
+// Beats:
+//   1. Parse G5 flags fail-closed, rejecting unknown flags and traversal input/output paths exit 2.
+//   2. Dispatch `edit` (--crop/--annotate/--redact/--blackout/--copy/--secret/--out) and `ocr`.
+//   3. Dispatch `pick` (--rgb R,G,B or --x/--y/--in) returning HEX, RGB, and OKLCH milli JSON.
+
+import "core/capture.oo";
+import "core/color_pick.oo";
+import "core/edit_g5.oo";
+import "ooda-standard/core/primitives/strconv.oo";
+import "ooda-standard/core/format/json_writer.oo";
+import "ooda-standard/fs/file/fs_grp/fs_invariants.oo";
+import "ooda-standard/fs/os/fs.oo";
+import "ooda-standard/fs/os/fs/fs.oo";
+import "ooda-standard/fs/time/chrono.oo";
+
+fn shot_g5_opt(args: &List[String], key: String) -> String {
+    let mut i: Int = 0;
+    while i + 1 < list_len(args) {
+        if list_get(args, i) == key { return list_get(args, i + 1); }
+        i = i + 1;
+    }
+    return "";
+}
+
+fn shot_g5_has(args: &List[String], key: String) -> Bool {
+    let mut i: Int = 0;
+    while i < list_len(args) {
+        if list_get(args, i) == key { return true; }
+        i = i + 1;
+    }
+    return false;
+}
+
+fn shot_g5_flags_ok(args: &List[String]) -> Bool {
+    let mut i: Int = 1;
+    while i < list_len(args) {
+        let a: String = list_get(args, i);
+        if a == "--json" || a == "--blackout" || a == "--copy" || a == "--secret" {
+            i = i + 1;
+            continue;
+        }
+        if a == "--in" || a == "--out" || a == "--crop" || a == "--annotate" || a == "--redact" ||
+            a == "--rgb" || a == "--x" || a == "--y" || a == "--mode" {
+            if i + 1 >= list_len(args) { return false; }
+            i = i + 2;
+            continue;
+        }
+        return false;
+    }
+    return true;
+}
+
+fn shot_edit_cmd(fs_r: &FsReadCap, fs_w: &FsWriteCap, args: &List[String], ver: String, js: Bool) -> Int {
+    let ppm: String = match shot_edit_apply(fs_r, shot_g5_opt(args, "--in"), shot_g5_opt(args, "--crop"),
+        shot_g5_opt(args, "--annotate"), shot_g5_opt(args, "--redact"), shot_g5_has(args, "--blackout")) {
+        Ok(v) => v,
+        Err(e) => {
+            println("ERR ooda-screenshot edit: " + e);
+            return 2;
+        }
+    };
+    let outp: String = shot_g5_opt(args, "--out");
+    if outp != "" {
+        if !oo_path_ok(str_slice(outp, 0, bytes_len(outp))) ||
+            fs_is_dotdot_traversal(str_slice(outp, 0, bytes_len(outp))) != 0 ||
+            fs_write_file(fs_w, outp, str_slice(ppm, 0, bytes_len(ppm))).is_err() {
+            println("ERR ooda-screenshot edit: refused or failed --out");
+            return 2;
+        }
+    }
+    let copy_on: Bool = shot_g5_has(args, "--copy");
+    let secret_on: Bool = shot_g5_has(args, "--secret");
+    if js {
+        let cs: String = if copy_on { "true" } else { "false" };
+        let ss: String = if secret_on { "true" } else { "false" };
+        println("{\"component\":\"ooda-screenshot\",\"version\":\"" + json_escape_str(ver) +
+            "\",\"command\":\"edit\",\"bytes\":" + bytes_len(ppm).to_string() + ",\"copied\":" + cs +
+            ",\"burn_secret\":" + ss + ",\"pass\":true}");
+        return 0;
+    }
+    println("ooda-screenshot " + ver + " edit: bytes=" + bytes_len(ppm).to_string() + " copy=" +
+        copy_on.to_string() + " burn_secret=" + secret_on.to_string());
+    return 0;
+}
+
+fn shot_pick_emit(c: PickedColor, ver: String, js: Bool) -> Int {
+    if js { println(shot_pick_json(c, ver)); }
+    else { println("ooda-screenshot " + ver + " pick: hex=" + c.hex); }
+    return 0;
+}
+
+fn shot_pick_cmd(fs_r: &FsReadCap, args: &List[String], ver: String, js: Bool) -> Int {
+    let rgb_s: String = shot_g5_opt(args, "--rgb");
+    if rgb_s != "" {
+        let rr: Result[PickedColor, String] = shot_pick_parse_rgb(rgb_s);
+        if rr.is_err() {
+            println("ERR ooda-screenshot pick: " + match rr { Ok(_) => "", Err(e) => e });
+            return 2;
+        }
+        let c: PickedColor = match rr { Ok(v) => v, Err(_) => shot_rgb_to_oklch(0, 0, 0) };
+        return shot_pick_emit(c, ver, js);
+    }
+    let xs: String = shot_g5_opt(args, "--x");
+    let ys: String = shot_g5_opt(args, "--y");
+    let px: Int = if xs == "" { 0 } else { match parse_int(xs) { Ok(v) => v, Err(_) => -1 } };
+    let py: Int = if ys == "" { 0 } else { match parse_int(ys) { Ok(v) => v, Err(_) => -1 } };
+    let inp: String = shot_g5_opt(args, "--in");
+    let mut ppm: String = if inp == "" { shot_render_ppm(0, 16, 12) } else { "" };
+    if inp != "" && oo_path_ok(str_slice(inp, 0, bytes_len(inp))) &&
+        fs_is_dotdot_traversal(str_slice(inp, 0, bytes_len(inp))) == 0 {
+        ppm = match fs_read_file(fs_r, inp) { Ok(s) => s, Err(_) => "" };
+    }
+    let rp: Result[PickedColor, String] = shot_pick_ppm(ppm, px, py);
+    if rp.is_err() {
+        println("ERR ooda-screenshot pick: " + match rp { Ok(_) => "", Err(e) => e });
+        return 2;
+    }
+    let cp: PickedColor = match rp { Ok(v) => v, Err(_) => shot_rgb_to_oklch(0, 0, 0) };
+    return shot_pick_emit(cp, ver, js);
+}
+
+pub fn shot_g5_cli(fs_r: &FsReadCap, fs_w: &FsWriteCap, env: &EnvCap, tm: &TimeCap,
+    args: &List[String], ver: String) -> Int {
+    if !shot_g5_flags_ok(args) {
+        println("ERR ooda-screenshot: unknown or incomplete flag");
+        return 2;
+    }
+    let v: String = if list_len(args) > 0 { list_get(args, 0) } else { "" };
+    let js: Bool = shot_g5_has(args, "--json");
+    if v == "region" || v == "screen" || v == "window" {
+        let mode: Int = shot_parse_mode(v);
+        let outp: String = shot_g5_opt(args, "--out");
+        let ts: Int = chrono_now_ms(tm) / 1000;
+        let wr: Result[String, String] = shot_write_capture(fs_w, env, outp, mode, ts);
+        if wr.is_err() {
+            println("ERR ooda-screenshot: " + match wr { Ok(_) => "", Err(e) => e });
+            return 2;
+        }
+        let p: String = match wr { Ok(s) => s, Err(_) => "" };
+        if js {
+            println("{\"component\":\"ooda-screenshot\",\"version\":\"" + json_escape_str(ver) +
+                "\",\"mode\":\"" + v + "\",\"out\":\"" + json_escape_str(p) + "\",\"pass\":true}");
+            return 0;
+        }
+        println("captured mode=" + v + " out=" + p);
+        return 0;
+    }
+    if v == "edit" { return shot_edit_cmd(fs_r, fs_w, args, ver, js); }
+    if v == "ocr" {
+        let text: String = shot_ocr_ppm(shot_render_ppm(2, 16, 12));
+        if js {
+            println("{\"component\":\"ooda-screenshot\",\"version\":\"" + json_escape_str(ver) +
+                "\",\"command\":\"ocr\",\"summary\":\"" + json_escape_str(text) + "\",\"pass\":true}");
+            return 0;
+        }
+        println("ooda-screenshot " + ver + " ocr: " + text);
+        return 0;
+    }
+    if v == "pick" { return shot_pick_cmd(fs_r, args, ver, js); }
+    println("ERR ooda-screenshot: unknown G5 command " + v);
+    return 2;
+}

@@ -11,7 +11,7 @@ import "core/anchor.oo";
 import "cli/main.oo";
 
 pub fn ooshot_version() -> String {
-    return "0.1.0";
+    return "0.2.0";
 }
 
 pub fn ooshot_name() -> String {

@@ -9,3 +9,6 @@
 
 import "ooda-standard/sec/pqc.oo";
 import "core/capture.oo";
+import "core/color_pick.oo";
+import "core/edit_g5.oo";
+import "core/edit_cli.oo";
